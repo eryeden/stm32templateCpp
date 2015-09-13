@@ -1,0 +1,194 @@
+PROJECT(stm32-cmake-test)
+
+CMAKE_MINIMUM_REQUIRED(VERSION 2.8)
+ENABLE_LANGUAGE(ASM)
+
+INCLUDE(CMakeForceCompiler)
+
+IF(NOT TOOLCHAIN_PREFIX)
+  SET(TOOLCHAIN_PREFIX "/usr")
+  MESSAGE(STATUS "No TOOLCHAIN_PREFIX specified, using default: " ${TOOLCHAIN_PREFIX})
+ENDIF()
+
+IF(NOT TARGET_TRIPLET)
+  SET(TARGET_TRIPLET "arm-none-eabi")
+  MESSAGE(STATUS "No TARGET_TRIPLET specified, using default: " ${TARGET_TRIPLET})
+ENDIF()
+
+SET(TOOLCHAIN_BIN_DIR ${TOOLCHAIN_PREFIX}/bin)
+SET(TOOLCHAIN_INC_DIR ${TOOLCHAIN_PREFIX}/${TARGET_TRIPLET}/include)
+SET(TOOLCHAIN_LIB_DIR ${TOOLCHAIN_PREFIX}/${TARGET_TRIPLET}/lib)
+
+SET(CMAKE_SYSTEM_NAME Generic)
+SET(CMAKE_SYSTEM_PROCESSOR arm)
+
+
+CMAKE_FORCE_C_COMPILER(${TOOLCHAIN_BIN_DIR}/${TARGET_TRIPLET}-gcc GNU)
+CMAKE_FORCE_CXX_COMPILER(${TOOLCHAIN_BIN_DIR}/${TARGET_TRIPLET}-g++ GNU)
+SET(CMAKE_ASM_COMPILER ${TOOLCHAIN_BIN_DIR}/${TARGET_TRIPLET}-gcc)
+
+#SET(CMAKE_OBJCOPY ${TOOLCHAIN_BIN_DIR}/${TARGET_TRIPLET}-objcopy CACHE INTERNAL "objcopy tool")
+#SET(CMAKE_OBJDUMP ${TOOLCHAIN_BIN_DIR}/${TARGET_TRIPLET}-objdump CACHE INTERNAL "objdump tool")
+SET(CMAKE_OBJCOPY arm-none-eabi-objcopy CACHE INTERNAL "objcopy tool")
+SET(CMAKE_OBJDUMP arm-none-eabi-objdump CACHE INTERNAL "objdump tool")
+
+#Set(CMAKE_FIND_ROOT_PATH ${TOOLCHAIN_PREFIX}/${TARGET_TRIPLET} ${EXTRA_FIND_PATH})
+#SET(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+#SET(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+#SET(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+
+set(TARGET_STM32 "stm32f401")
+set(ROOT_STM32CUBE "/home/ery/dev/STM32F4/STM32Cube_FW_F4_V1.7.0")
+set(DEVICE_CMSIS "${ROOT_STM32CUBE}/Drivers/CMSIS/Device/ST/STM32F4xx/Include")
+set(CORE_CMSIS "${ROOT_STM32CUBE}/Drivers/CMSIS/Include")
+set(HAL_CMSIS_INC "${ROOT_STM32CUBE}/Drivers/STM32F4xx_HAL_Driver/Inc")
+set(HAL_CMSIS_SRC "${ROOT_STM32CUBE}/Drivers/STM32F4xx_HAL_Driver/Src")
+set(BSP_CMSIS "${ROOT_STM32CUBE}/Drivers/BSP/STM32F4xx-Nucleo")
+set(LINKER_SCRIPT_STM32F401 "STM32F401CE_FLASH.ld")
+set(STARTUP_STM32F401 "startup_stm32f401xe.s")
+
+set(STM32_COMPILEOPTIONS "-Wall -mcpu=cortex-m4 -mlittle-endian -mthumb -DSTM32F401xE -O1")
+set(STM32_LINKOPTIONS "-mcpu=cortex-m4 -mlittle-endian -mthumb -DSTM32F401xE")
+
+SET(DIR_SOURCE "${PROJECT_SOURCE_DIR}/src")
+SET(DIR_INCLUDE "${PROJECT_SOURCE_DIR}/inc")
+SET(DIR_BIN "${PROJECT_SOURCE_DIR}/bin")
+
+#Find stm32cube hal library ###############################################
+SET(HAL_COMPONENTS adc can cec cortex crc cryp dac dcmi dma dma2d eth flash
+  flash_ramfunc fmpi2c gpio hash hcd i2c i2s irda iwdg ltdc
+  nand nor pccard pcd pwr qspi rcc rng rtc sai sd sdram
+  smartcard spdifrx spi sram tim uart usart wwdg fmc fsmc
+  sdmmc usb)
+
+SET(HAL_REQUIRED_COMPONENTS cortex pwr rcc)
+
+# Components that have _ex sources
+SET(HAL_EX_COMPONENTS adc cryp dac dcmi dma flash fmpi2c hash i2c i2s pcd
+  pwr rcc rtc sai tim)
+
+# Components that have ll_ in names instead of hal_
+SET(HAL_LL_COMPONENTS fmc fsmc sdmmc usb)
+
+SET(HAL_PREFIX stm32f4xx_)
+
+SET(HAL_HEADERS
+  stm32f4xx_hal.h
+  stm32f4xx_hal_def.h
+  )
+
+SET(HAL_SRCS
+  stm32f4xx_hal.c
+  )
+
+#使用コンポーネントの設定がなければすべてのコンポーネントを使用する
+IF(NOT STM32HAL_FIND_COMPONENTS)
+  SET(STM32HAL_FIND_COMPONENTS ${HAL_COMPONENTS})
+  MESSAGE(STATUS
+    "No STM32HAL components selected, using all: ${STM32HAL_FIND_COMPONENTS}")
+ENDIF()
+
+#HAL_REQUIRED_COMPONENTSが使用コンポーネントリストに含まれていない場合、それを使用コンポーネント（STM32HAL_FIND_COMPONENTS）に追加する
+FOREACH(cmp ${HAL_REQUIRED_COMPONENTS})
+  LIST(FIND STM32HAL_FIND_COMPONENTS ${cmp} STM32HAL_FOUND_INDEX)
+  IF(${STM32HAL_FOUND_INDEX} LESS 0)
+    LIST(APPEND STM32HAL_FIND_COMPONENTS ${cmp})
+  ENDIF()
+ENDFOREACH()
+
+FOREACH(cmp ${STM32HAL_FIND_COMPONENTS})
+  #HALコンポーネントに含まれているかをチェック
+  LIST(FIND HAL_COMPONENTS ${cmp} STM32HAL_FOUND_INDEX)
+  IF(${STM32HAL_FOUND_INDEX} LESS 0)
+    MESSAGE(FATAL_ERROR "Unknown STM32HAL component: ${cmp}. Available components: ${HAL_COMPONENTS}")
+  ENDIF()
+
+  #コンポーネントがLLコンポーネントであるかをチェックし、適切なファイル名でインクルード、ソースファイル名として追加
+  LIST(FIND HAL_LL_COMPONENTS ${cmp} STM32HAL_FOUND_INDEX)
+  IF(${STM32HAL_FOUND_INDEX} LESS 0)
+    #LLコンポーネント出ない場合
+    LIST(APPEND HAL_HEADERS ${HAL_PREFIX}hal_${cmp}.h)
+    LIST(APPEND HAL_SRCS ${HAL_PREFIX}hal_${cmp}.c)
+  ELSE()
+    #LLコンポーネントの場合
+    LIST(APPEND HAL_HEADERS ${HAL_PREFIX}ll_${cmp}.h)
+    LIST(APPEND HAL_SRCS ${HAL_PREFIX}ll_${cmp}.c)
+  ENDIF()
+
+  #EXコンポーネントの場合
+  LIST(FIND HAL_EX_COMPONENTS ${cmp} STM32HAL_FOUND_INDEX)
+  IF(NOT (${STM32HAL_FOUND_INDEX} LESS 0))
+    LIST(APPEND HAL_HEADERS ${HAL_PREFIX}hal_${cmp}_ex.h)
+    LIST(APPEND HAL_SRCS ${HAL_PREFIX}hal_${cmp}_ex.c)
+  ENDIF()
+ENDFOREACH()
+
+#重複を削除
+LIST(REMOVE_DUPLICATES HAL_HEADERS)
+LIST(REMOVE_DUPLICATES HAL_SRCS)
+
+message("#######HAL HEADRS#######")
+#message(${HAL_HEADERS})
+FOREACH(comp ${HAL_HEADERS})
+  message(${comp})
+ENDFOREACH()
+message("#######HAL SOURCES#######")
+#message(${HAL_SRCS})
+FOREACH(comp ${HAL_SRCS})
+  message("${HAL_CMSIS_SRC}/${comp}")
+  LIST(APPEND STM32HAL_SOURCES "${HAL_CMSIS_SRC}/${comp}")
+ENDFOREACH()
+
+#############################################################################
+
+INCLUDE_DIRECTORIES(
+  ${PROJECT_SOURCE_DIR}
+  ${DIR_INCLUDE}
+  ${DEVICE_CMSIS}
+  ${CORE_CMSIS}
+  ${HAL_CMSIS_INC}
+  )
+
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${STM32_COMPILEOPTIONS}")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CMAKE_C_FLAGS}")
+
+message("##C_FLAGS##")
+message(${CMAKE_C_FLAGS})
+message("##CXX_FLAGS##")
+message(${CMAKE_CXX_FLAGS})
+
+message("##LD_FLAGS##")
+
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${STM32_LINKOPTIONS}")
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -T${LINKER_SCRIPT_STM32F401}")
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--gc-sections")
+
+message(${CMAKE_EXE_LINKER_FLAGS})
+
+SET(CMAKE_SHARED_LIBRARY_LINK_C_FLAGS)
+SET(CMAKE_SHARED_LIBRARY_LINK_CXX_FLAGS)
+
+set(SRCS
+  ${DIR_SOURCE}/main.cpp
+  ${DIR_SOURCE}/system.c
+  ${DIR_SOURCE}/${STARTUP_STM32F401}
+  )
+
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+
+add_executable(${CMAKE_PROJECT_NAME} ${SRCS} ${STM32HAL_SOURCES})
+
+set(TARGET ${CMAKE_PROJECT_NAME})
+
+#ALLを入れてないと自動実行
+#入れいていない時は
+#make ${CMAKE_PROJECT_NAME}.hex
+#のようにコマンドを打てば実行可能
+ADD_CUSTOM_TARGET(${TARGET}.hex
+  ALL
+  DEPENDS ${TARGET}
+  COMMAND ${CMAKE_OBJCOPY} -Oihex ${CMAKE_BINARY_DIR}/bin/${TARGET} ${CMAKE_BINARY_DIR}/bin/${TARGET}.hex)
+ADD_CUSTOM_TARGET(${TARGET}.bin
+  ALL
+  DEPENDS ${TARGET}
+  COMMAND ${CMAKE_OBJCOPY} -Obinary ${CMAKE_BINARY_DIR}/bin/${TARGET} ${CMAKE_BINARY_DIR}/bin/${TARGET}.bin)
